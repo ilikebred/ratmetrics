@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RatMetrics</title>
+<title>FRC Analysis</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:system-ui,sans-serif;background:#f3f4f6;color:#1a1a1a;min-height:100vh}
@@ -49,7 +49,7 @@ button{border:none;border-radius:8px;padding:8px 16px;font-size:14px;cursor:poin
 <body>
 <div class="header">
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-  <h1>RatMetrics</h1>
+  <h1>FRC Analysis</h1>
   <span class="hs" id="hdr-status"></span>
 </div>
 <div class="container" id="app"><div style="padding:30px;text-align:center;color:#888">Loading…</div></div>
@@ -58,8 +58,8 @@ button{border:none;border-radius:8px;padding:8px 16px;font-size:14px;cursor:poin
 // ─────────────────────────────────────────
 //  🔧 PASTE YOUR SUPABASE CREDENTIALS HERE
 // ─────────────────────────────────────────
-const SUPABASE_URL = 'https://scsepypxlrtfahvkcilk.supabase.co';       // e.g. https://xxxx.supabase.co
-const SUPABASE_ANON_KEY = 'sb_publishable__s_rBp7SK9BOT3uCGJv7Bg_idM796oD';
+const SUPABASE_URL = 'YOUR_SUPABASE_URL';
+const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
 // ─────────────────────────────────────────
 
 const TBA = 'iKwYPFM2U6Qnn2VRXyMclANWgdYrWDHI63wr69b9mGHPvB9k1gvZbNi9f3qljuD7';
@@ -302,24 +302,60 @@ function renderCompare(teams){
 async function openDetail(num){
   state.selTeam=num; state.screen='detail';
   state.tbaInfo=null; state.tbaMedia=[]; state.tbaMatches=[]; state.tbaLastEvent=null; state.tbaEvents=null;
+  state.tbaAllEvents=[]; state.tbaSelectedEventKey=null; state.tbaPlayoffs=null; state.tbaBotMedia=[];
   render();
   try{
     const key='frc'+num;
-    const [info,media,evList]=await Promise.allSettled([tba(`/team/${key}`),tba(`/team/${key}/media/2025`),tba(`/team/${key}/events/2025/simple`)]);
+    const curYear=new Date().getFullYear();
+    const [info,media,evList2026,evList2025]=await Promise.allSettled([
+      tba(`/team/${key}`),
+      tba(`/team/${key}/media/${curYear}`),
+      tba(`/team/${key}/events/${curYear}/simple`),
+      tba(`/team/${key}/events/${curYear-1}/simple`)
+    ]);
     state.tbaInfo=info.status==='fulfilled'?info.value:null;
     state.tbaMedia=media.status==='fulfilled'?media.value:[];
-    if(evList.status==='fulfilled'&&evList.value?.length){
-      const evs=evList.value.sort((a,b)=>new Date(a.start_date)-new Date(b.start_date));
-      state.tbaEvents=evs;
+
+    // also try last year media for bot photo
+    try{const m2=await tba(`/team/${key}/media/${curYear-1}`);state.tbaMedia=[...(state.tbaMedia||[]),...(m2||[])];}catch(e){}
+
+    let evs=[];
+    if(evList2026.status==='fulfilled'&&evList2026.value?.length) evs=evList2026.value;
+    else if(evList2025.status==='fulfilled'&&evList2025.value?.length) evs=evList2025.value;
+    evs=evs.sort((a,b)=>new Date(a.start_date)-new Date(b.start_date));
+    state.tbaAllEvents=evs;
+    if(evs.length){
       const last=evs[evs.length-1];
       state.tbaLastEvent=last;
-      try{
-        const ms=await tba(`/team/${key}/matches/${last.year}/simple`);
-        state.tbaMatches=(ms||[]).filter(m=>m.comp_level==='qm'&&m.event_key===last.key);
-      }catch(e){}
+      state.tbaSelectedEventKey=last.key;
+      await loadEventMatches(num, last);
     }
   }catch(e){}
   render();
+}
+
+async function loadEventMatches(num, ev){
+  const key='frc'+num;
+  try{
+    const ms=await tba(`/team/${key}/matches/${ev.year}/simple`);
+    state.tbaMatches=(ms||[]).filter(m=>m.event_key===ev.key);
+    // playoffs
+    const pms=state.tbaMatches.filter(m=>m.comp_level!=='qm');
+    const wins=pms.filter(m=>{const onRed=m.alliances?.red?.team_keys?.includes(key);return onRed?m.alliances.red.score>m.alliances.blue.score:m.alliances?.blue?.score>m.alliances?.red?.score;}).length;
+    // alliance
+    try{
+      const alliances=await tba(`/event/${ev.key}/alliances`);
+      let allianceNum=null;
+      (alliances||[]).forEach((a,i)=>{if(a.picks?.includes(key)||a.declines?.includes(key)) allianceNum=i+1;});
+      state.tbaPlayoffs={wins,losses:pms.length-wins,allianceNum};
+    }catch(e){state.tbaPlayoffs={wins,losses:pms.length-wins,allianceNum:null};}
+  }catch(e){state.tbaMatches=[];state.tbaPlayoffs=null;}
+}
+
+async function switchEvent(evKey){
+  state.tbaSelectedEventKey=evKey;
+  const ev=state.tbaAllEvents.find(e=>e.key===evKey);
+  if(ev){ await loadEventMatches(state.selTeam, ev); render(); }
 }
 
 function renderDetail(){
