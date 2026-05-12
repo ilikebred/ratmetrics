@@ -145,27 +145,27 @@ async function tba(path){
 
 // ── SCORING ──────────────────────────────
 
+// ── SCORING (REBUILT 2026) ────────────────
+// Fuel: 1pt auto, 1pt tele; Tower: L1=10, L2=20, L3=30; Auto climb L1=15
 function calcScore(m){
-  const auto = (m.autoL1||0)*3+(m.autoL2||0)*4+(m.autoL3||0)*6+(m.autoL4||0)*7
-             + (m.autoAlgae||0)*4+(m.autoAlgaeProc||0)*6+(m.mobility==='Yes'?3:0);
-  const tele = (m.teleL1||0)*2+(m.teleL2||0)*3+(m.teleL3||0)*4+(m.teleL4||0)*5
-             + (m.teleAlgae||0)*4+(m.teleAlgaeProc||0)*6;
-  const end  = m.endgame==='Deep'?12:m.endgame==='Shallow'?6:m.endgame==='Park'?2:0;
-  return auto+tele+end;
+  const fuel=(m.autoFuel||0)+(m.teleFuel||0);
+  const tower=m.towerLevel==='L1 (10pts)'?10:m.towerLevel==='L2 (20pts)'?20:m.towerLevel==='L3 (30pts)'?30:m.towerLevel==='L1'?10:m.towerLevel==='L2'?20:m.towerLevel==='L3'?30:0;
+  const autoClimb=m.autoClimb==='L1 (15pts)'||m.autoClimb==='L1'?15:0;
+  return fuel+tower+autoClimb;
 }
 
 function calcStats(num){
-  const ms = state.scoutData[num]||[];
+  const ms=state.scoutData[num]||[];
   if(!ms.length) return null;
   const wins=ms.filter(m=>m.result==='win').length;
   const scores=ms.map(calcScore);
   const avg=Math.round(scores.reduce((a,b)=>a+b,0)/scores.length);
-  const coral=ms.map(m=>(m.autoL1||0)+(m.autoL2||0)+(m.autoL3||0)+(m.autoL4||0)+(m.teleL1||0)+(m.teleL2||0)+(m.teleL3||0)+(m.teleL4||0));
-  const avgCoral=Math.round(coral.reduce((a,b)=>a+b,0)/coral.length*10)/10;
-  const climbs=ms.filter(m=>m.endgame&&m.endgame!=='None').length;
+  const totalFuel=ms.map(m=>(m.autoFuel||0)+(m.teleFuel||0));
+  const avgFuel=Math.round(totalFuel.reduce((a,b)=>a+b,0)/totalFuel.length*10)/10;
+  const climbs=ms.filter(m=>m.towerLevel&&m.towerLevel!=='None').length;
   return{wins,losses:ms.length-wins,ties:ms.filter(m=>m.result==='tie').length,
     avgScore:avg,maxScore:Math.max(...scores),minScore:Math.min(...scores),
-    avgCoral,climbPct:Math.round(climbs/ms.length*100),matchCount:ms.length};
+    avgFuel,climbPct:Math.round(climbs/ms.length*100),matchCount:ms.length};
 }
 
 function scoutedTeams(){
@@ -367,11 +367,23 @@ async function loadEventMatches(num, ev){
 
 async function loadEPA(num){
   const curYear=new Date().getFullYear();
-  // Try current year first, then last year
   for(const yr of [curYear, curYear-1]){
     try{
       const d=await statbotics(`/team_year/${num}/${yr}`);
-      if(d&&d.epa){state.epaData=d;state.epaYear=yr;return;}
+      if(!d||d.detail)continue;
+      // Normalise — v3 API has several possible shapes, grab whatever is present
+      const epa={};
+      // Total
+      epa.total = d?.epa?.total_points?.mean ?? d?.epa?.mean ?? d?.total_epa ?? d?.epa ?? null;
+      // Auto
+      epa.auto  = d?.epa?.breakdown?.auto_points?.mean  ?? d?.auto_epa  ?? d?.epa?.auto  ?? null;
+      // Teleop
+      epa.tele  = d?.epa?.breakdown?.teleop_points?.mean ?? d?.teleop_epa ?? d?.epa?.teleop ?? null;
+      // Endgame
+      epa.end   = d?.epa?.breakdown?.endgame_points?.mean ?? d?.endgame_epa ?? d?.epa?.endgame ?? null;
+      // norm epa for display
+      epa.norm  = d?.norm_epa?.mean ?? d?.norm_epa ?? null;
+      if(epa.total!==null){state.epaData=epa;state.epaYear=yr;return;}
     }catch(e){}
   }
   state.epaData=null; state.epaYear=null;
@@ -490,13 +502,14 @@ function renderDetail(){
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">
           <div class="stat-box"><div class="stat-label">Wins</div><div class="stat-val" style="font-size:18px;color:#2e7d32">${s.wins}</div></div>
           <div class="stat-box"><div class="stat-label">Losses</div><div class="stat-val" style="font-size:18px;color:#c62828">${s.losses}</div></div>
-          <div class="stat-box"><div class="stat-label">Avg Coral</div><div class="stat-val" style="font-size:18px">${s.avgCoral}</div></div>
+          <div class="stat-box"><div class="stat-label">Avg Fuel</div><div class="stat-val" style="font-size:18px">${s.avgFuel}</div></div>
           <div class="stat-box"><div class="stat-label">Climb %</div><div class="stat-val" style="font-size:18px">${s.climbPct}%</div></div>
         </div>
         <div style="font-size:11px;font-weight:600;color:#777;margin-bottom:6px">MATCH LOG</div>
         ${scoutMatches.map(m=>`<div class="match-score-row">
           <span style="color:#555">Q${m.matchNum}</span>
           <span style="font-weight:600">${calcScore(m)} pts</span>
+          <span style="font-size:11px;color:#888">${(m.autoFuel||0)+(m.teleFuel||0)} fuel</span>
           <span class="badge ${m.result==='win'?'badge-w':'badge-l'}">${m.result}</span>
         </div>`).join('')}`
       :`<div style="color:#bbb;font-size:13px;text-align:center;padding:20px 0">No scouted matches yet</div>`}
@@ -508,7 +521,7 @@ function renderDetail(){
   <div class="card" style="margin-top:14px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
       <h2 style="margin-bottom:0">EPA — Statbotics ${state.epaYear}</h2>
-      <a href="https://www.statbotics.io/team/${num}" target="_blank"
+      <a href="https://www.statbotics.io/team/${num}/${state.epaYear}" target="_blank"
         style="font-size:12px;color:#2e7d32;text-decoration:none;background:#e8f5e9;padding:4px 10px;border-radius:8px">
         View Full Graph ↗
       </a>
@@ -516,30 +529,31 @@ function renderDetail(){
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
       <div class="stat-box">
         <div class="stat-label">Total EPA</div>
-        <div class="stat-val">${Math.round((state.epaData.epa?.total_points?.mean||state.epaData.epa?.mean||0)*10)/10}</div>
+        <div class="stat-val">${state.epaData.total!==null?Math.round(state.epaData.total*10)/10:'—'}</div>
       </div>
       <div class="stat-box">
         <div class="stat-label">Auto EPA</div>
-        <div class="stat-val" style="font-size:18px">${Math.round((state.epaData.epa?.breakdown?.auto_points?.mean||0)*10)/10}</div>
+        <div class="stat-val" style="font-size:18px">${state.epaData.auto!==null?Math.round(state.epaData.auto*10)/10:'—'}</div>
       </div>
       <div class="stat-box">
         <div class="stat-label">Teleop EPA</div>
-        <div class="stat-val" style="font-size:18px">${Math.round((state.epaData.epa?.breakdown?.teleop_points?.mean||0)*10)/10}</div>
+        <div class="stat-val" style="font-size:18px">${state.epaData.tele!==null?Math.round(state.epaData.tele*10)/10:'—'}</div>
       </div>
       <div class="stat-box">
         <div class="stat-label">Endgame EPA</div>
-        <div class="stat-val" style="font-size:18px">${Math.round((state.epaData.epa?.breakdown?.endgame_points?.mean||0)*10)/10}</div>
+        <div class="stat-val" style="font-size:18px">${state.epaData.end!==null?Math.round(state.epaData.end*10)/10:'—'}</div>
       </div>
     </div>
+    ${state.epaData.norm!==null?`<div style="font-size:12px;color:#777;margin-bottom:10px">Normalized EPA: <strong>${Math.round(state.epaData.norm)}</strong></div>`:''}
     <div style="background:#f9fbe7;border:1px solid #e0e0e0;border-radius:10px;padding:12px;font-size:13px;color:#555;display:flex;align-items:center;justify-content:space-between">
-      <span>See full EPA graph, match history, and event breakdowns on Statbotics</span>
-      <a href="https://www.statbotics.io/team/${num}" target="_blank"
+      <span>Full EPA graph, match history &amp; event breakdowns on Statbotics</span>
+      <a href="https://www.statbotics.io/team/${num}/${state.epaYear}" target="_blank"
         style="background:#1b5e20;color:#fff;padding:6px 14px;border-radius:8px;text-decoration:none;font-size:13px;font-weight:500;flex-shrink:0;margin-left:12px">
         Open Statbotics →
       </a>
     </div>
   </div>`
-  :state.epaData===null&&state.tbaInfo?`
+  :state.epaData===null&&state.tbaInfo!==null?`
   <div class="card" style="margin-top:14px">
     <div style="display:flex;align-items:center;justify-content:space-between">
       <h2 style="margin-bottom:0">EPA — Statbotics</h2>
@@ -548,7 +562,7 @@ function renderDetail(){
         Open Statbotics ↗
       </a>
     </div>
-    <div style="color:#bbb;font-size:13px;margin-top:10px">No EPA data found for this team.</div>
+    <div style="color:#bbb;font-size:13px;margin-top:10px">No EPA data available yet for this team this season.</div>
   </div>`:''}
   `;
 }
