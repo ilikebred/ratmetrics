@@ -303,6 +303,7 @@ async function openDetail(num){
   state.selTeam=num; state.screen='detail';
   state.tbaInfo=null; state.tbaMedia=[]; state.tbaMatches=[]; state.tbaLastEvent=null; state.tbaEvents=null;
   state.tbaAllEvents=[]; state.tbaSelectedEventKey=null; state.tbaPlayoffs=null; state.tbaBotMedia=[];
+  state.epaData=null; state.epaYear=null;
   render();
   try{
     const key='frc'+num;
@@ -334,22 +335,46 @@ async function openDetail(num){
   render();
 }
 
+async function statbotics(path){
+  const r=await fetch('https://api.statbotics.io/v3'+path);
+  if(!r.ok) throw new Error('Statbotics '+r.status);
+  return r.json();
+}
+
 async function loadEventMatches(num, ev){
   const key='frc'+num;
   try{
     const ms=await tba(`/team/${key}/matches/${ev.year}/simple`);
     state.tbaMatches=(ms||[]).filter(m=>m.event_key===ev.key);
-    // playoffs
     const pms=state.tbaMatches.filter(m=>m.comp_level!=='qm');
     const wins=pms.filter(m=>{const onRed=m.alliances?.red?.team_keys?.includes(key);return onRed?m.alliances.red.score>m.alliances.blue.score:m.alliances?.blue?.score>m.alliances?.red?.score;}).length;
-    // alliance
+    // Alliance info with captain/pick status
     try{
       const alliances=await tba(`/event/${ev.key}/alliances`);
-      let allianceNum=null;
-      (alliances||[]).forEach((a,i)=>{if(a.picks?.includes(key)||a.declines?.includes(key)) allianceNum=i+1;});
-      state.tbaPlayoffs={wins,losses:pms.length-wins,allianceNum};
-    }catch(e){state.tbaPlayoffs={wins,losses:pms.length-wins,allianceNum:null};}
+      let allianceNum=null, allianceRole=null;
+      (alliances||[]).forEach((a,i)=>{
+        const picks=a.picks||[];
+        if(picks[0]===key){allianceNum=i+1;allianceRole='Captain';}
+        else if(picks[1]===key){allianceNum=i+1;allianceRole='1st Pick';}
+        else if(picks[2]===key){allianceNum=i+1;allianceRole='2nd Pick';}
+        else if(picks[3]===key){allianceNum=i+1;allianceRole='3rd Pick';}
+        else if((a.declines||[]).includes(key)){allianceNum=i+1;allianceRole='Declined';}
+      });
+      state.tbaPlayoffs={wins,losses:pms.length-wins,allianceNum,allianceRole};
+    }catch(e){state.tbaPlayoffs={wins,losses:pms.length-wins,allianceNum:null,allianceRole:null};}
   }catch(e){state.tbaMatches=[];state.tbaPlayoffs=null;}
+}
+
+async function loadEPA(num){
+  const curYear=new Date().getFullYear();
+  // Try current year first, then last year
+  for(const yr of [curYear, curYear-1]){
+    try{
+      const d=await statbotics(`/team_year/${num}/${yr}`);
+      if(d&&d.epa){state.epaData=d;state.epaYear=yr;return;}
+    }catch(e){}
+  }
+  state.epaData=null; state.epaYear=null;
 }
 
 async function switchEvent(evKey){
@@ -449,7 +474,10 @@ function renderDetail(){
 
       ${playoffs?`
         <div style="border-top:1px solid #f0f0f0;padding-top:10px;margin-top:4px">
-          ${playoffs.allianceNum?`<div style="font-size:12px;color:#555;margin-bottom:4px">Alliance <strong>#${playoffs.allianceNum}</strong></div>`:''}
+          ${playoffs.allianceNum?`<div style="font-size:12px;color:#555;margin-bottom:4px">
+            Alliance <strong>#${playoffs.allianceNum}</strong>
+            ${playoffs.allianceRole?`<span style="margin-left:6px;background:#e8f5e9;color:#2e7d32;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">${playoffs.allianceRole}</span>`:''}
+          </div>`:''}
           <div style="font-size:12px;color:#555">Playoffs: <strong>${playoffs.wins}W – ${playoffs.losses}L</strong></div>
         </div>`:''}
     </div>
@@ -473,7 +501,56 @@ function renderDetail(){
         </div>`).join('')}`
       :`<div style="color:#bbb;font-size:13px;text-align:center;padding:20px 0">No scouted matches yet</div>`}
     </div>
-  </div>`;
+  </div>
+
+  <!-- EPA SECTION -->
+  ${state.epaData?`
+  <div class="card" style="margin-top:14px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <h2 style="margin-bottom:0">EPA — Statbotics ${state.epaYear}</h2>
+      <a href="https://www.statbotics.io/team/${num}" target="_blank"
+        style="font-size:12px;color:#2e7d32;text-decoration:none;background:#e8f5e9;padding:4px 10px;border-radius:8px">
+        View Full Graph ↗
+      </a>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
+      <div class="stat-box">
+        <div class="stat-label">Total EPA</div>
+        <div class="stat-val">${Math.round((state.epaData.epa?.total_points?.mean||state.epaData.epa?.mean||0)*10)/10}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Auto EPA</div>
+        <div class="stat-val" style="font-size:18px">${Math.round((state.epaData.epa?.breakdown?.auto_points?.mean||0)*10)/10}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Teleop EPA</div>
+        <div class="stat-val" style="font-size:18px">${Math.round((state.epaData.epa?.breakdown?.teleop_points?.mean||0)*10)/10}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Endgame EPA</div>
+        <div class="stat-val" style="font-size:18px">${Math.round((state.epaData.epa?.breakdown?.endgame_points?.mean||0)*10)/10}</div>
+      </div>
+    </div>
+    <div style="background:#f9fbe7;border:1px solid #e0e0e0;border-radius:10px;padding:12px;font-size:13px;color:#555;display:flex;align-items:center;justify-content:space-between">
+      <span>See full EPA graph, match history, and event breakdowns on Statbotics</span>
+      <a href="https://www.statbotics.io/team/${num}" target="_blank"
+        style="background:#1b5e20;color:#fff;padding:6px 14px;border-radius:8px;text-decoration:none;font-size:13px;font-weight:500;flex-shrink:0;margin-left:12px">
+        Open Statbotics →
+      </a>
+    </div>
+  </div>`
+  :state.epaData===null&&state.tbaInfo?`
+  <div class="card" style="margin-top:14px">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <h2 style="margin-bottom:0">EPA — Statbotics</h2>
+      <a href="https://www.statbotics.io/team/${num}" target="_blank"
+        style="font-size:12px;color:#2e7d32;background:#e8f5e9;padding:4px 10px;border-radius:8px;text-decoration:none">
+        Open Statbotics ↗
+      </a>
+    </div>
+    <div style="color:#bbb;font-size:13px;margin-top:10px">No EPA data found for this team.</div>
+  </div>`:''}
+  `;
 }
 
 async function loadAvatars(){
